@@ -8,3 +8,8 @@ Example
 password = getpass
 puts password
 ```
+
+```ruby
+password = getpass("Enter new Password:")
+puts password
+```

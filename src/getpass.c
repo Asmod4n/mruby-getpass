@@ -107,7 +107,7 @@ mrb_getpass(mrb_state *mrb, mrb_value self)
     memset(RSTRING_PTR(buf), 0, RSTRING_CAPA(buf));
 
     fputs(prompt, stderr);
-    rewind(stdin);      /* implied flush */
+    rewind(stderr);      /* implied flush */
 
     int ch;
     while ((ch = _getch()) != '\003' && (ch != '\r'||ch != '\n')) {
