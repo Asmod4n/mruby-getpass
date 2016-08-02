@@ -110,7 +110,7 @@ mrb_getpass(mrb_state *mrb, mrb_value self)
     rewind(stderr);      /* implied flush */
 
     int ch;
-    while ((ch = _getch()) != '\003' && (ch != '\r'||ch != '\n')) {
+    while ((ch = _getch()) != '\003' && ch != '\r') {
       mrb_str_cat(mrb, buf, (const char *) &ch, 1);
     }
 
@@ -119,7 +119,8 @@ mrb_getpass(mrb_state *mrb, mrb_value self)
       buf = mrb_nil_value();
     }
 
-    write(fileno(stderr), "\n", 1);
+    fputs("\n", fileno(stderr));
+    rewind(stderr);      /* implied flush */
 
     mrb->jmp = prev_jmp;
   }
