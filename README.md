@@ -1,5 +1,5 @@
 # mruby-getpass
-Securely read passwords from the command prompt
+Read passwords from the command prompt
 
 Example
 =======
