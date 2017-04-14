@@ -119,18 +119,17 @@ mrb_getpass(mrb_state *mrb, mrb_value self)
       buf = mrb_nil_value();
     }
 
-    fputs("\n", fileno(stderr));
-    rewind(stderr);      /* implied flush */
+    fputs("\n", stderr);
 
     mrb->jmp = prev_jmp;
   }
   MRB_CATCH(&c_jmp)
   {
-      mrb->jmp = prev_jmp;
-      if (mrb_string_p(buf)) {
-        memset(RSTRING_PTR(buf), 0, RSTRING_CAPA(buf));
-      }
-      MRB_THROW(mrb->jmp);
+    mrb->jmp = prev_jmp;
+    if (mrb_string_p(buf)) {
+      memset(RSTRING_PTR(buf), 0, RSTRING_CAPA(buf));
+    }
+    MRB_THROW(mrb->jmp);
   }
   MRB_END_EXC(&c_jmp);
 
@@ -158,8 +157,9 @@ mrb_getpass(mrb_state *mrb, mrb_value self)
   struct mrb_jmpbuf c_jmp;
   FILE *fp = NULL, *outfp = NULL;
   mrb_value buf = mrb_nil_value();
-  struct termios term = {0};
-  int echo = 0;
+  struct termios term;
+  memset(&term, 0, sizeof(term));
+  mrb_bool echo = FALSE;
 
   MRB_TRY(&c_jmp)
   {
@@ -172,7 +172,6 @@ mrb_getpass(mrb_state *mrb, mrb_value self)
     errno = 0;
     if ((outfp = fp = fopen(_PATH_TTY, "w+")) == NULL) {
       if (errno == ENOMEM) {
-        sigprocmask(SIG_UNBLOCK, &stop, NULL);
         mrb_exc_raise(mrb, mrb_obj_value(mrb->nomem_err));
       }
       fp = stdin;
@@ -197,6 +196,7 @@ mrb_getpass(mrb_state *mrb, mrb_value self)
       term.c_lflag &= ~ECHO;
       tcsetattr(fileno(fp), TCSAFLUSH|TCSASOFT, &term);
     }
+
     fputs(prompt, outfp);
     rewind(outfp);      /* implied flush */
 
@@ -204,12 +204,11 @@ mrb_getpass(mrb_state *mrb, mrb_value self)
     while ((ch = fgetc(fp)) != EOF && ch != '\n') {
       mrb_str_cat(mrb, buf, (const char *) &ch, 1);
     }
-
     if (feof(fp)) {
       memset(RSTRING_PTR(buf), 0, RSTRING_CAPA(buf));
       buf = mrb_nil_value();
     }
-    write(fileno(outfp), "\n", 1);
+    fputs("\n", outfp);
 
     // enable echoing again
     if (echo) {
@@ -219,27 +218,28 @@ mrb_getpass(mrb_state *mrb, mrb_value self)
     if (fp != stdin) {
       fclose(fp);
     }
-    sigprocmask(SIG_UNBLOCK, &stop, NULL);
 
     mrb->jmp = prev_jmp;
   }
   MRB_CATCH(&c_jmp)
   {
-      mrb->jmp = prev_jmp;
-      if (echo) {
-        term.c_lflag |= ECHO;
-        tcsetattr(fileno(fp), TCSAFLUSH|TCSASOFT, &term);
-      }
-      if (fp && fp != stdin) {
-        fclose(fp);
-      }
-      if (mrb_string_p(buf)) {
-        memset(RSTRING_PTR(buf), 0, RSTRING_CAPA(buf));
-      }
-      sigprocmask(SIG_UNBLOCK, &stop, NULL);
-      MRB_THROW(mrb->jmp);
+    mrb->jmp = prev_jmp;
+    if (echo) {
+      term.c_lflag |= ECHO;
+      tcsetattr(fileno(fp), TCSAFLUSH|TCSASOFT, &term);
+    }
+    if (fp && fp != stdin) {
+      fclose(fp);
+    }
+    if (mrb_string_p(buf)) {
+      memset(RSTRING_PTR(buf), 0, RSTRING_CAPA(buf));
+    }
+    sigprocmask(SIG_UNBLOCK, &stop, NULL);
+    MRB_THROW(mrb->jmp);
   }
   MRB_END_EXC(&c_jmp);
+
+  sigprocmask(SIG_UNBLOCK, &stop, NULL);
 
   return buf;
 }
