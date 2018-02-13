@@ -139,6 +139,10 @@ mrb_getpass(mrb_state *mrb, mrb_value self)
 
 #else
 
+#ifndef TCSASOFT
+#define TCSASOFT 0
+#endif
+
 static mrb_value
 mrb_getpass(mrb_state *mrb, mrb_value self)
 {
