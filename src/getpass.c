@@ -71,6 +71,7 @@ limitations under the License.
  */
 
 #include <mruby.h>
+#include <mruby/error.h>
 #ifdef _MSC_VER
 #include <conio.h>
 #else
@@ -81,7 +82,6 @@ limitations under the License.
 #include <unistd.h>
 #endif
 #include <stdio.h>
-#include <mruby/throw.h>
 #include <mruby/string.h>
 #include <string.h>
 
@@ -143,109 +143,121 @@ mrb_getpass(mrb_state *mrb, mrb_value self)
 #define TCSASOFT 0
 #endif
 
+struct passinfo {
+  sigset_t stop;
+  struct termios term;
+  FILE *fp, *outfp;
+  mrb_value buf;
+  mrb_bool echo;
+};
+
+static mrb_value
+body(mrb_state *mrb, mrb_value pass_val)
+{
+  struct passinfo *p = (struct passinfo*)mrb_cptr(pass_val);
+  const char prompt[] = "Password:";
+  int ch;
+
+  /*
+   * read and write to /dev/tty if possible; else read from
+   * stdin and write to stderr.
+   */
+  errno = 0;
+  if ((p->outfp = p->fp = fopen(_PATH_TTY, "w+")) == NULL) {
+    if (errno == ENOMEM) {
+      mrb_exc_raise(mrb, mrb_obj_value(mrb->nomem_err));
+    }
+    p->fp = stdin;
+    p->outfp = stderr;
+  }
+
+  // we require a tty
+  if (!isatty(fileno(p->fp))||!isatty(fileno(p->outfp))) {
+    mrb_raise(mrb, E_RUNTIME_ERROR, "sorry, you must have a tty");
+  }
+
+  mrb_get_args(mrb, "|z", &prompt);
+
+  p->buf = mrb_str_buf_new(mrb, 0);
+  memset(RSTRING_PTR(p->buf), 0, RSTRING_CAPA(p->buf));
+
+  // disable echoing of the password, if it was enabled
+  tcgetattr(fileno(p->fp), &p->term);
+  if ((p->echo = (p->term.c_lflag & ECHO))) {
+    p->term.c_lflag &= ~ECHO;
+    tcsetattr(fileno(p->fp), TCSAFLUSH|TCSASOFT, &p->term);
+  }
+
+  fputs(prompt, p->outfp);
+  rewind(p->outfp);      /* implied flush */
+
+  while ((ch = fgetc(p->fp)) != EOF && ch != '\n') {
+    mrb_str_cat(mrb, p->buf, (const char *) &ch, 1);
+  }
+  if (feof(p->fp)) {
+    memset(RSTRING_PTR(p->buf), 0, RSTRING_CAPA(p->buf));
+    p->buf = mrb_nil_value();
+  }
+  fputs("\n", p->outfp);
+
+  // enable echoing again
+  if (p->echo) {
+    p->term.c_lflag |= ECHO;
+    tcsetattr(fileno(p->fp), TCSAFLUSH|TCSASOFT, &p->term);
+  }
+  if (p->fp != stdin) {
+    fclose(p->fp);
+  }
+
+  return p->buf;
+}
+
+static mrb_value
+rescue(mrb_state *mrb, mrb_value pass_val)
+{
+  struct passinfo *p = (struct passinfo*)mrb_cptr(pass_val);
+
+  if (p->echo) {
+    p->term.c_lflag |= ECHO;
+    tcsetattr(fileno(p->fp), TCSAFLUSH|TCSASOFT, &p->term);
+  }
+  if (p->fp && p->fp != stdin) {
+    fclose(p->fp);
+  }
+  if (mrb_string_p(p->buf)) {
+    memset(RSTRING_PTR(p->buf), 0, RSTRING_CAPA(p->buf));
+  }
+
+  return p->buf;
+}
+
 static mrb_value
 mrb_getpass(mrb_state *mrb, mrb_value self)
 {
-  sigset_t stop;
-  sigemptyset (&stop);
-  sigaddset(&stop, SIGINT);
-  sigaddset(&stop, SIGTSTP);
+  struct passinfo pass;
+  mrb_value pass_val = mrb_cptr_value(mrb, &pass);
+
+  pass.buf = mrb_nil_value();
+  pass.fp = NULL;
+  pass.outfp = NULL;
+  pass.echo = FALSE;
+
+  sigemptyset (&pass.stop);
+  sigaddset(&pass.stop, SIGINT);
+  sigaddset(&pass.stop, SIGTSTP);
 
   /*
    * note - blocking signals isn't necessarily the
    * right thing, but we leave it for now.
    */
-  sigprocmask(SIG_BLOCK, &stop, NULL);
+  sigprocmask(SIG_BLOCK, &pass.stop, NULL);
 
-  struct mrb_jmpbuf* prev_jmp = mrb->jmp;
-  struct mrb_jmpbuf c_jmp;
-  FILE *fp = NULL, *outfp = NULL;
-  mrb_value buf = mrb_nil_value();
-  struct termios term;
-  memset(&term, 0, sizeof(term));
-  mrb_bool echo = FALSE;
+  memset(&pass.term, 0, sizeof(pass.term));
 
-  MRB_TRY(&c_jmp)
-  {
-    mrb->jmp = &c_jmp;
+  mrb_rescue_exceptions(mrb, body, pass_val, rescue, pass_val, 1, &mrb->eException_class);
 
-    /*
-     * read and write to /dev/tty if possible; else read from
-     * stdin and write to stderr.
-     */
-    errno = 0;
-    if ((outfp = fp = fopen(_PATH_TTY, "w+")) == NULL) {
-      if (errno == ENOMEM) {
-        mrb_exc_raise(mrb, mrb_obj_value(mrb->nomem_err));
-      }
-      fp = stdin;
-      outfp = stderr;
-    }
-
-    // we require a tty
-    if (!isatty(fileno(fp))||!isatty(fileno(outfp))) {
-      mrb_raise(mrb, E_RUNTIME_ERROR, "sorry, you must have a tty");
-    }
-
-    const char *prompt = "Password:";
-
-    mrb_get_args(mrb, "|z", &prompt);
-
-    buf = mrb_str_buf_new(mrb, 0);
-    memset(RSTRING_PTR(buf), 0, RSTRING_CAPA(buf));
-
-    // disable echoing of the password, if it was enabled
-    tcgetattr(fileno(fp), &term);
-    if ((echo = (term.c_lflag & ECHO))) {
-      term.c_lflag &= ~ECHO;
-      tcsetattr(fileno(fp), TCSAFLUSH|TCSASOFT, &term);
-    }
-
-    fputs(prompt, outfp);
-    rewind(outfp);      /* implied flush */
-
-    int ch;
-    while ((ch = fgetc(fp)) != EOF && ch != '\n') {
-      mrb_str_cat(mrb, buf, (const char *) &ch, 1);
-    }
-    if (feof(fp)) {
-      memset(RSTRING_PTR(buf), 0, RSTRING_CAPA(buf));
-      buf = mrb_nil_value();
-    }
-    fputs("\n", outfp);
-
-    // enable echoing again
-    if (echo) {
-      term.c_lflag |= ECHO;
-      tcsetattr(fileno(fp), TCSAFLUSH|TCSASOFT, &term);
-    }
-    if (fp != stdin) {
-      fclose(fp);
-    }
-
-    mrb->jmp = prev_jmp;
-  }
-  MRB_CATCH(&c_jmp)
-  {
-    mrb->jmp = prev_jmp;
-    if (echo) {
-      term.c_lflag |= ECHO;
-      tcsetattr(fileno(fp), TCSAFLUSH|TCSASOFT, &term);
-    }
-    if (fp && fp != stdin) {
-      fclose(fp);
-    }
-    if (mrb_string_p(buf)) {
-      memset(RSTRING_PTR(buf), 0, RSTRING_CAPA(buf));
-    }
-    sigprocmask(SIG_UNBLOCK, &stop, NULL);
-    MRB_THROW(mrb->jmp);
-  }
-  MRB_END_EXC(&c_jmp);
-
-  sigprocmask(SIG_UNBLOCK, &stop, NULL);
-
-  return buf;
+  sigprocmask(SIG_UNBLOCK, &pass.stop, NULL);
+  return pass.buf;
 }
 
 #endif
